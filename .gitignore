@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Production Build Directories
+dist/
+
+# Compiled Go Binaries
+backend/server
+backend/server.exe
+
+# Local Upload storage files (keep folder structure trackable)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Local Environment Variables
+.env
+.env.local
+.env.*.local
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# IDE Configurations
+.vscode/
+.idea/
+*.suo
+*.sw?
