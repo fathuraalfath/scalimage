@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 
 	"scalimage/internal/collage"
+	"scalimage/internal/compress"
 	"scalimage/internal/handler"
+	"scalimage/internal/resize"
 	"scalimage/internal/storage"
 )
 
@@ -27,11 +29,13 @@ func main() {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 
-	// Initialize Collage Generator
+	// Initialize Services
 	gen := collage.NewGenerator(store)
+	comp := compress.NewService(store)
+	res := resize.NewService(store)
 
 	// Initialize Handlers
-	h := handler.NewHandler(store, gen)
+	h := handler.NewHandler(store, gen, comp, res)
 
 	// Setup routing mux
 	mux := http.NewServeMux()
@@ -39,11 +43,13 @@ func main() {
 	// API routes
 	mux.HandleFunc("/api/upload", h.UploadHandler)
 	mux.HandleFunc("/api/collage", h.CollageHandler)
+	mux.HandleFunc("/api/compress", h.CompressHandler)
+	mux.HandleFunc("/api/resize", h.ResizeHandler)
 
 	// Serve uploads directory
 	mux.Handle("/uploads/", h.ServeUploadsHandler(absUploadDir))
 
-	// CORS wrapper
+	// CORS & Security wrapper
 	wrappedMux := handler.CorsMiddleware(mux)
 
 	// Determine port

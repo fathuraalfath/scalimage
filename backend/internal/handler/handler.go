@@ -17,6 +17,8 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"scalimage/internal/collage"
+	"scalimage/internal/compress"
+	"scalimage/internal/resize"
 	"scalimage/internal/storage"
 )
 
@@ -32,27 +34,33 @@ type UploadResponse struct {
 type Handler struct {
 	store     storage.Storage
 	generator *collage.Generator
+	compress  *compress.Service
+	resize    *resize.Service
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(store storage.Storage, generator *collage.Generator) *Handler {
+func NewHandler(store storage.Storage, generator *collage.Generator, comp *compress.Service, res *resize.Service) *Handler {
 	return &Handler{
 		store:     store,
 		generator: generator,
+		compress:  comp,
+		resize:    res,
 	}
 }
 
-// UploadHandler handles uploading multiple image files.
+// UploadHandler handles uploading multiple image files with strict security validations.
 func (h *Handler) UploadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Limit to 32MB uploads
+	// Security: Limit total multipart body size to 32MB to prevent memory exhaustion
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
+
 	err := r.ParseMultipartForm(32 << 20)
 	if err != nil {
-		http.Error(w, "Failed to parse multipart form: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Failed to parse multipart form or file too large: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -72,17 +80,29 @@ func (h *Handler) UploadHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		defer file.Close()
 
-		// Read bytes into memory to parse dimensions and save
 		fileBytes, err := io.ReadAll(file)
 		if err != nil {
 			http.Error(w, "Failed to read file content: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Parse dimensions
+		// Security: Strict MIME validation to prevent uploading malicious scripts or HTML
+		mimeType := http.DetectContentType(fileBytes)
+		if !strings.HasPrefix(mimeType, "image/") {
+			http.Error(w, "Rejected non-image file type: "+mimeType, http.StatusBadRequest)
+			return
+		}
+
+		// Parse dimensions & format
 		config, format, err := image.DecodeConfig(bytes.NewReader(fileBytes))
 		if err != nil {
-			http.Error(w, "Invalid image file format: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "Invalid or unsupported image format: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Security: Guard against image dimension bombs
+		if config.Width <= 0 || config.Height <= 0 || config.Width > 8192 || config.Height > 8192 {
+			http.Error(w, "Image dimensions exceed maximum supported resolution (8192x8192)", http.StatusBadRequest)
 			return
 		}
 
@@ -90,8 +110,7 @@ func (h *Handler) UploadHandler(w http.ResponseWriter, r *http.Request) {
 		randBytes := make([]byte, 16)
 		_, _ = rand.Read(randBytes)
 		ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-		if ext == "" {
-			// Fallback extension based on decoded format
+		if ext == "" || ext == "." {
 			ext = "." + format
 		}
 		uniqueID := hex.EncodeToString(randBytes) + ext
@@ -122,10 +141,19 @@ func (h *Handler) CollageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Security: Limit JSON request payload to 1MB
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
 	var req collage.CollageRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
 		http.Error(w, "Invalid request JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Security: Guard canvas dimension boundaries
+	if req.CanvasWidth <= 0 || req.CanvasHeight <= 0 || req.CanvasWidth > 8192 || req.CanvasHeight > 8192 {
+		http.Error(w, "Canvas dimensions must be between 1 and 8192 px", http.StatusBadRequest)
 		return
 	}
 
@@ -144,7 +172,68 @@ func (h *Handler) CollageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return binary stream
+	contentType := "image/png"
+	if strings.ToLower(req.Format) == "jpeg" || strings.ToLower(req.Format) == "jpg" {
+		contentType = "image/jpeg"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	_, _ = buf.WriteTo(w)
+}
+
+// CompressHandler handles dedicated single-image compression and format conversion.
+func (h *Handler) CompressHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	var req compress.CompressRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := h.compress.Process(r.Context(), req, &buf); err != nil {
+		http.Error(w, "Compression failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	contentType := "image/png"
+	if strings.ToLower(req.Format) == "jpeg" || strings.ToLower(req.Format) == "jpg" {
+		contentType = "image/jpeg"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	_, _ = buf.WriteTo(w)
+}
+
+// ResizeHandler handles dedicated image dimension scaling.
+func (h *Handler) ResizeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	var req resize.ResizeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := h.resize.Process(r.Context(), req, &buf); err != nil {
+		http.Error(w, "Resize failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	contentType := "image/png"
 	if strings.ToLower(req.Format) == "jpeg" || strings.ToLower(req.Format) == "jpg" {
 		contentType = "image/jpeg"
@@ -160,12 +249,20 @@ func (h *Handler) ServeUploadsHandler(baseDir string) http.Handler {
 	return http.StripPrefix("/uploads/", http.FileServer(http.Dir(baseDir)))
 }
 
-// CorsMiddleware injects CORS headers to facilitate local multi-port environment requests.
+// CorsMiddleware injects CORS and HTTP security headers to protect against XSS and sniffing attacks.
 func CorsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// CORS headers
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		// Security Hardening Headers
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)
 			return

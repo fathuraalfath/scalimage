@@ -37,6 +37,31 @@ func TestParseHexColor(t *testing.T) {
 	}
 }
 
+func TestApplyCornerRadius(t *testing.T) {
+	// Create a 20x20 solid red image
+	img := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	for y := 0; y < 20; y++ {
+		for x := 0; x < 20; x++ {
+			img.Set(x, y, color.RGBA{R: 255, G: 0, B: 0, A: 255})
+		}
+	}
+
+	// Apply 5px corner radius
+	ApplyCornerRadius(img, 5)
+
+	// Top-leftmost pixel (0,0) should be transparent (outside radius)
+	tlColor := img.RGBAAt(0, 0)
+	if tlColor.A != 0 {
+		t.Errorf("expected top-left corner pixel alpha to be 0, got %d", tlColor.A)
+	}
+
+	// Center pixel (10,10) should remain solid red
+	cColor := img.RGBAAt(10, 10)
+	if cColor.A != 255 || cColor.R != 255 {
+		t.Errorf("expected center pixel to be solid red, got %+v", cColor)
+	}
+}
+
 func TestGenerator_Generate(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "scalimage-collage-test-*")
 	if err != nil {
@@ -83,13 +108,15 @@ func TestGenerator_Generate(t *testing.T) {
 		t.Fatalf("failed to save blue img: %v", err)
 	}
 
-	// 3. Initialize Generator and request a 100x100 collage containing both images
+	// 3. Initialize Generator and request a 100x100 collage containing both images with gap & radius
 	gen := NewGenerator(s)
 	req := CollageRequest{
 		CanvasWidth:  100,
 		CanvasHeight: 100,
 		BGColor:      "#00ff00", // green background
 		Format:       "png",
+		Gap:          4,
+		BorderRadius: 2,
 		Images: []PlacedImage{
 			{ID: redID, X: 0, Y: 0, Width: 50, Height: 100},
 			{ID: blueID, X: 50, Y: 0, Width: 50, Height: 100},
@@ -100,7 +127,7 @@ func TestGenerator_Generate(t *testing.T) {
 	if err := gen.Generate(ctx, req, &outputBuf); err != nil {
 		t.Fatalf("collage generation failed: %v", err)
 	}
-
+ 
 	// 4. Verify generated image dimensions
 	collageImg, err := png.Decode(&outputBuf)
 	if err != nil {

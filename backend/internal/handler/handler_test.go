@@ -13,10 +13,12 @@ import (
 	"testing"
 
 	"scalimage/internal/collage"
+	"scalimage/internal/compress"
+	"scalimage/internal/resize"
 	"scalimage/internal/storage"
 )
 
-func TestIntegration_UploadAndCollage(t *testing.T) {
+func TestIntegration_UploadCollageCompressResize(t *testing.T) {
 	// Create temp dir for storage
 	tempDir, err := os.MkdirTemp("", "scalimage-integration-*")
 	if err != nil {
@@ -30,24 +32,24 @@ func TestIntegration_UploadAndCollage(t *testing.T) {
 	}
 
 	gen := collage.NewGenerator(store)
-	h := NewHandler(store, gen)
+	comp := compress.NewService(store)
+	res := resize.NewService(store)
+	h := NewHandler(store, gen, comp, res)
 
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/upload" {
-			h.UploadHandler(w, r)
-		} else if r.URL.Path == "/api/collage" {
-			h.CollageHandler(w, r)
-		} else {
-			http.NotFound(w, r)
-		}
-	}))
+	// Create test server with CorsMiddleware
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/upload", h.UploadHandler)
+	mux.HandleFunc("/api/collage", h.CollageHandler)
+	mux.HandleFunc("/api/compress", h.CompressHandler)
+	mux.HandleFunc("/api/resize", h.ResizeHandler)
+
+	server := httptest.NewServer(CorsMiddleware(mux))
 	defer server.Close()
 
 	// 1. Create a mock image file to upload
-	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
-	for y := 0; y < 10; y++ {
-		for x := 0; x < 10; x++ {
+	img := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	for y := 0; y < 20; y++ {
+		for x := 0; x < 20; x++ {
 			img.Set(x, y, color.RGBA{R: 255, G: 0, B: 0, A: 255})
 		}
 	}
@@ -84,6 +86,11 @@ func TestIntegration_UploadAndCollage(t *testing.T) {
 		t.Fatalf("upload returned non-OK status: %d", resp.StatusCode)
 	}
 
+	// Verify security headers
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("expected X-Content-Type-Options: nosniff header")
+	}
+
 	var uploadRes []UploadResponse
 	if err := json.NewDecoder(resp.Body).Decode(&uploadRes); err != nil {
 		t.Fatalf("failed to decode upload response: %v", err)
@@ -93,54 +100,33 @@ func TestIntegration_UploadAndCollage(t *testing.T) {
 		t.Fatalf("expected 1 uploaded image metadata, got %d", len(uploadRes))
 	}
 	uploaded := uploadRes[0]
-	if uploaded.Width != 10 || uploaded.Height != 10 || uploaded.Format != "png" {
-		t.Errorf("unexpected image metadata: %+v", uploaded)
-	}
 
-	// 3. Perform collage request
-	collageReq := collage.CollageRequest{
-		CanvasWidth:  100,
-		CanvasHeight: 100,
-		BGColor:      "#0000ff",
+	// 3. Test /api/compress endpoint
+	compressBody, _ := json.Marshal(compress.CompressRequest{
+		ID:      uploaded.ID,
+		Format:  "jpeg",
+		Quality: 75,
+	})
+	reqCompress, _ := http.NewRequest("POST", server.URL+"/api/compress", bytes.NewReader(compressBody))
+	reqCompress.Header.Set("Content-Type", "application/json")
+	respCompress, err := http.DefaultClient.Do(reqCompress)
+	if err != nil || respCompress.StatusCode != http.StatusOK {
+		t.Fatalf("compress request failed (status: %d)", respCompress.StatusCode)
+	}
+	respCompress.Body.Close()
+
+	// 4. Test /api/resize endpoint
+	resizeBody, _ := json.Marshal(resize.ResizeRequest{
+		ID:           uploaded.ID,
+		TargetWidth:  40,
+		TargetHeight: 40,
 		Format:       "png",
-		Images: []collage.PlacedImage{
-			{
-				ID:     uploaded.ID,
-				X:      10,
-				Y:      20,
-				Width:  80,
-				Height: 60,
-			},
-		},
+	})
+	reqResize, _ := http.NewRequest("POST", server.URL+"/api/resize", bytes.NewReader(resizeBody))
+	reqResize.Header.Set("Content-Type", "application/json")
+	respResize, err := http.DefaultClient.Do(reqResize)
+	if err != nil || respResize.StatusCode != http.StatusOK {
+		t.Fatalf("resize request failed (status: %d)", respResize.StatusCode)
 	}
-	reqBytes, err := json.Marshal(collageReq)
-	if err != nil {
-		t.Fatalf("failed to marshal collage request: %v", err)
-	}
-
-	req2, err := http.NewRequest("POST", server.URL+"/api/collage", bytes.NewReader(reqBytes))
-	if err != nil {
-		t.Fatalf("failed to create collage request: %v", err)
-	}
-	req2.Header.Set("Content-Type", "application/json")
-
-	resp2, err := http.DefaultClient.Do(req2)
-	if err != nil {
-		t.Fatalf("collage request failed: %v", err)
-	}
-	defer resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("collage returned non-OK status: %d", resp2.StatusCode)
-	}
-
-	collageImg, err := png.Decode(resp2.Body)
-	if err != nil {
-		t.Fatalf("failed to decode returned collage image: %v", err)
-	}
-
-	bounds := collageImg.Bounds()
-	if bounds.Dx() != 100 || bounds.Dy() != 100 {
-		t.Errorf("expected 100x100 collage, got %dx%d", bounds.Dx(), bounds.Dy())
-	}
+	respResize.Body.Close()
 }

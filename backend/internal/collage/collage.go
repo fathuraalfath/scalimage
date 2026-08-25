@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,8 +33,10 @@ type PlacedImage struct {
 type CollageRequest struct {
 	CanvasWidth  int           `json:"canvasWidth"`
 	CanvasHeight int           `json:"canvasHeight"`
-	BGColor      string        `json:"bgColor"` // Hex string, e.g. "#ffffff"
-	Format       string        `json:"format"`  // "png" or "jpeg"
+	BGColor      string        `json:"bgColor"`      // Hex string, e.g. "#ffffff"
+	Format       string        `json:"format"`       // "png" or "jpeg"
+	Gap          int           `json:"gap"`          // Gap spacing in pixels between images
+	BorderRadius int           `json:"borderRadius"` // Corner rounding radius in pixels
 	Images       []PlacedImage `json:"images"`
 }
 
@@ -93,23 +96,41 @@ func (g *Generator) Generate(ctx context.Context, req CollageRequest, out io.Wri
 				return
 			}
 
-			// If dimensions match target, bypass scaling
-			var scaledImg image.Image
-			if srcImg.Bounds().Dx() == placed.Width && srcImg.Bounds().Dy() == placed.Height {
-				scaledImg = srcImg
-			} else {
-				dstRect := image.Rect(0, 0, placed.Width, placed.Height)
-				dstImg := image.NewRGBA(dstRect)
-				// ponytail: Using BiLinear interpolation for high quality and good speed.
-				xdraw.BiLinear.Scale(dstImg, dstRect, srcImg, srcImg.Bounds(), xdraw.Over, nil)
-				scaledImg = dstImg
+			// Apply gap inset calculations
+			targetX := placed.X
+			targetY := placed.Y
+			targetW := placed.Width
+			targetH := placed.Height
+
+			if req.Gap > 0 {
+				halfGap := req.Gap / 2
+				targetX += halfGap
+				targetY += halfGap
+				targetW -= req.Gap
+				targetH -= req.Gap
+				if targetW <= 0 {
+					targetW = 1
+				}
+				if targetH <= 0 {
+					targetH = 1
+				}
+			}
+
+			dstRect := image.Rect(0, 0, targetW, targetH)
+			dstImg := image.NewRGBA(dstRect)
+			// ponytail: Using BiLinear interpolation for high quality and good speed.
+			xdraw.BiLinear.Scale(dstImg, dstRect, srcImg, srcImg.Bounds(), xdraw.Over, nil)
+
+			// Apply corner radius if requested
+			if req.BorderRadius > 0 {
+				ApplyCornerRadius(dstImg, req.BorderRadius)
 			}
 
 			results <- scaledResult{
 				index: index,
-				img:   scaledImg,
-				x:     placed.X,
-				y:     placed.Y,
+				img:   dstImg,
+				x:     targetX,
+				y:     targetY,
 			}
 		}(idx, pi)
 	}
@@ -131,7 +152,6 @@ func (g *Generator) Generate(ctx context.Context, req CollageRequest, out io.Wri
 		if res.img == nil {
 			continue
 		}
-		// Draw res.img at res.x, res.y relative to canvas
 		bounds := res.img.Bounds()
 		dp := image.Pt(res.x, res.y)
 		dr := bounds.Add(dp)
@@ -146,6 +166,49 @@ func (g *Generator) Generate(ctx context.Context, req CollageRequest, out io.Wri
 
 	// Default to PNG
 	return png.Encode(out, canvas)
+}
+
+// ApplyCornerRadius masks out pixels outside the specified corner radius.
+func ApplyCornerRadius(img *image.RGBA, r int) {
+	if r <= 0 {
+		return
+	}
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if r > w/2 {
+		r = w / 2
+	}
+	if r > h/2 {
+		r = h / 2
+	}
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var dx, dy float64
+			isCorner := false
+
+			if x < r && y < r { // top-left corner
+				dx, dy = float64(r-x), float64(r-y)
+				isCorner = true
+			} else if x >= w-r && y < r { // top-right corner
+				dx, dy = float64(x-(w-r-1)), float64(r-y)
+				isCorner = true
+			} else if x < r && y >= h-r { // bottom-left corner
+				dx, dy = float64(r-x), float64(y-(h-r-1))
+				isCorner = true
+			} else if x >= w-r && y >= h-r { // bottom-right corner
+				dx, dy = float64(x-(w-r-1)), float64(y-(h-r-1))
+				isCorner = true
+			}
+
+			if isCorner {
+				dist := math.Hypot(dx, dy)
+				if dist > float64(r) {
+					img.Set(x, y, color.RGBA{0, 0, 0, 0})
+				}
+			}
+		}
+	}
 }
 
 // ParseHexColor parses a hex color string (e.g. "#ffffff" or "fff") into color.RGBA.
