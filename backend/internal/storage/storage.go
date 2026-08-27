@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Storage defines interface for managing file uploads.
@@ -15,6 +17,7 @@ type Storage interface {
 	Save(ctx context.Context, key string, data io.Reader) (string, error)
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	GetFullPath(key string) (string, error)
+	CleanupExpired(maxAge time.Duration) (int, error)
 }
 
 // LocalStorage implements Storage on local filesystem.
@@ -101,4 +104,53 @@ func (s *LocalStorage) Get(ctx context.Context, key string) (io.ReadCloser, erro
 // GetFullPath returns the absolute path of the file.
 func (s *LocalStorage) GetFullPath(key string) (string, error) {
 	return s.sanitizeKey(key)
+}
+
+// CleanupExpired deletes files older than maxAge in the base directory, skipping .gitkeep.
+// ponytail: Simple O(N) scan using standard filepath.Walk; sufficient for local directories.
+func (s *LocalStorage) CleanupExpired(maxAge time.Duration) (int, error) {
+	if maxAge <= 0 {
+		return 0, nil
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+	deleted := 0
+
+	err := filepath.Walk(s.baseDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || info.Name() == ".gitkeep" {
+			return nil
+		}
+		if info.ModTime().Before(cutoff) {
+			if removeErr := os.Remove(path); removeErr == nil {
+				deleted++
+			}
+		}
+		return nil
+	})
+
+	return deleted, err
+}
+
+// StartCleanupRoutine periodically sweeps and removes expired upload files in the background.
+func (s *LocalStorage) StartCleanupRoutine(ctx context.Context, maxAge, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				count, err := s.CleanupExpired(maxAge)
+				if err != nil {
+					log.Printf("[Storage Cleanup] Error during sweep: %v", err)
+				} else if count > 0 {
+					log.Printf("[Storage Cleanup] Purged %d expired files", count)
+				}
+			}
+		}
+	}()
 }

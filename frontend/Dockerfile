@@ -1,4 +1,5 @@
-FROM node:24-alpine
+# Stage 1: Build production static bundle
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 
@@ -6,11 +7,20 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Copy source files
+# Copy source files and compile minified production assets
 COPY . .
+RUN npm run build
 
-# Expose Vite port
-EXPOSE 5173
+# Stage 2: Serve with lightweight Nginx web server (~25MB)
+FROM nginx:alpine
 
-# Run Vite dev server, exposing it to external container networks
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+# Copy custom Nginx SPA routing config
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Copy compiled static assets from builder stage
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Expose HTTP port
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
