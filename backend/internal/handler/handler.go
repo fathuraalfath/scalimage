@@ -172,14 +172,7 @@ func (h *Handler) CollageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentType := "image/png"
-	if strings.ToLower(req.Format) == "jpeg" || strings.ToLower(req.Format) == "jpg" {
-		contentType = "image/jpeg"
-	}
-
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
-	_, _ = buf.WriteTo(w)
+	writeImageResponse(w, &buf, req.Format)
 }
 
 // CompressHandler handles dedicated single-image compression and format conversion.
@@ -203,14 +196,7 @@ func (h *Handler) CompressHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentType := "image/png"
-	if strings.ToLower(req.Format) == "jpeg" || strings.ToLower(req.Format) == "jpg" {
-		contentType = "image/jpeg"
-	}
-
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
-	_, _ = buf.WriteTo(w)
+	writeImageResponse(w, &buf, req.Format)
 }
 
 // ResizeHandler handles dedicated image dimension scaling.
@@ -234,8 +220,14 @@ func (h *Handler) ResizeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeImageResponse(w, &buf, req.Format)
+}
+
+// writeImageResponse writes the buffered image with appropriate headers.
+// ponytail: Unified response streamer for all image endpoints to eliminate DRY violations.
+func writeImageResponse(w http.ResponseWriter, buf *bytes.Buffer, format string) {
 	contentType := "image/png"
-	if strings.ToLower(req.Format) == "jpeg" || strings.ToLower(req.Format) == "jpg" {
+	if f := strings.ToLower(format); f == "jpeg" || f == "jpg" {
 		contentType = "image/jpeg"
 	}
 

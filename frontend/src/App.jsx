@@ -1,10 +1,9 @@
 import React, { useState, useRef } from 'react';
 import { PAPER_SIZES, TEMPLATES } from './helpers/layout';
+import { BACKEND_URL, uploadImages, downloadBlob } from './helpers/api';
 import CompressTool from './components/CompressTool';
 import ResizeTool from './components/ResizeTool';
 import './App.css';
-
-const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 function App() {
   const [activeTab, setActiveTab] = useState('collage'); // 'collage', 'compress', 'resize'
@@ -52,22 +51,8 @@ function App() {
     }
 
     setIsUploading(true);
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-      formData.append('images', files[i]);
-    }
-
     try {
-      const response = await fetch(`${BACKEND_URL}/api/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-
-      const data = await response.json();
+      const data = await uploadImages(files);
       
       setUploadedImages((prev) => [
         ...prev,
@@ -158,15 +143,7 @@ function App() {
       }
 
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `collage-${selectedPaperSize}-${orientation}-${Date.now()}.${exportFormat}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `collage-${selectedPaperSize}-${orientation}-${Date.now()}.${exportFormat}`);
     } catch (err) {
       console.error(err);
       alert(`Collage generation failed: ${err.message}`);

@@ -118,7 +118,7 @@ func (g *Generator) Generate(ctx context.Context, req CollageRequest, out io.Wri
 
 			dstRect := image.Rect(0, 0, targetW, targetH)
 			dstImg := image.NewRGBA(dstRect)
-			// ponytail: Using BiLinear interpolation for high quality and good speed.
+			// Using BiLinear interpolation for high quality and good speed.
 			xdraw.BiLinear.Scale(dstImg, dstRect, srcImg, srcImg.Bounds(), xdraw.Over, nil)
 
 			// Apply corner radius if requested

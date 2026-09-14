@@ -1,6 +1,5 @@
 import React, { useState, useRef } from 'react';
-
-const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+import { BACKEND_URL, uploadImages, downloadBlob } from '../helpers/api';
 
 export default function ResizeTool() {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -54,20 +53,11 @@ export default function ResizeTool() {
 
     setIsProcessing(true);
 
-    const formData = new FormData();
-    formData.append('images', selectedFile);
-
     try {
-      const uploadRes = await fetch(`${BACKEND_URL}/api/upload`, {
-        method: 'POST',
-        body: formData,
-      });
+      // 1. Upload file using shared helper
+      const uploaded = (await uploadImages([selectedFile]))[0];
 
-      if (!uploadRes.ok) throw new Error(await uploadRes.text());
-      const data = await uploadRes.json();
-      const uploaded = data[0];
-
-      // Call dedicated /api/resize service
+      // 2. Call dedicated /api/resize service
       const resizeReq = {
         id: uploaded.id,
         targetWidth: targetWidth,
@@ -83,14 +73,7 @@ export default function ResizeTool() {
 
       if (!res.ok) throw new Error(await res.text());
       const blob = await res.blob();
-      const downloadUrl = URL.createObjectURL(blob);
-
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = `resized-${targetWidth}x${targetHeight}-${Date.now()}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      downloadBlob(blob, `resized-${targetWidth}x${targetHeight}-${Date.now()}.png`);
     } catch (err) {
       alert(`Resize failed: ${err.message}`);
     } finally {

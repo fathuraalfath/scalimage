@@ -1,6 +1,5 @@
 import React, { useState, useRef } from 'react';
-
-const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+import { BACKEND_URL, uploadImages, downloadBlob } from '../helpers/api';
 
 export default function CompressTool() {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -23,19 +22,9 @@ export default function CompressTool() {
 
     setIsProcessing(true);
 
-    // 1. Upload file first
-    const formData = new FormData();
-    formData.append('images', selectedFile);
-
     try {
-      const uploadRes = await fetch(`${BACKEND_URL}/api/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!uploadRes.ok) throw new Error(await uploadRes.text());
-      const data = await uploadRes.json();
-      const uploaded = data[0];
+      // 1. Upload file using shared helper
+      const uploaded = (await uploadImages([selectedFile]))[0];
 
       // 2. Call dedicated /api/compress service
       const compressReq = {
@@ -52,14 +41,7 @@ export default function CompressTool() {
 
       if (!res.ok) throw new Error(await res.text());
       const blob = await res.blob();
-      const downloadUrl = URL.createObjectURL(blob);
-
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = `compressed-${Date.now()}.${targetFormat}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      downloadBlob(blob, `compressed-${Date.now()}.${targetFormat}`);
     } catch (err) {
       alert(`Compression failed: ${err.message}`);
     } finally {
